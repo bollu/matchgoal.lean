@@ -13,3 +13,5 @@ lean_lib «Matchgoal» {
 lean_exe «matchgoal» {
   root := `Main
 }
+
+require std4 from git "https://github.com/leanprover/std4" @ "5507f9"
