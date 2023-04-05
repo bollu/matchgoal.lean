@@ -24,14 +24,18 @@ declare_syntax_cat hyps_matcher
 declare_syntax_cat unification_var
 declare_syntax_cat unification_expr
 
-syntax "?" ident : unification_var
-syntax unification_var : term -- allow unification variables to be used in terms.
+-- syntax "?" ident : unification_var
+-- syntax unification_var : term -- allow unification variables to be used in terms.
+
+elab t:unification_var : term => do
+  -- build fake expression here
+  sorry
 
 
-syntax unification_var : unification_expr -- this needs a converter
-syntax term : unification_expr
-syntax "(" unification_var ":" unification_expr ")" : hyp_matcher
-syntax sepBy(hyp_matcher, ";") : hyps_matcher
+scoped syntax unification_var : unification_expr -- this needs a converter
+scoped syntax term : unification_expr
+scoped syntax "(" unification_var ":" unification_expr ")" : hyp_matcher
+scoped syntax sepBy(hyp_matcher, ";") : hyps_matcher
 
 structure MVar where
   id: MVarId
@@ -140,13 +144,14 @@ def runHypMatcher (ctx: PatternCtx) : TSyntax `hyp_matcher → MatchGoalM Patter
 -- match goal tactic
 -- TODO: why does 'local syntax' not work?
 -- local syntax (name := matchgoal) 
-syntax (name := matchgoal) 
+scoped syntax (name := matchgoal) 
   "matchgoal"
   (hyps_matcher)?
   "⊢" (( unification_expr)? <|>  "_") "=>" tactic : tactic
 
 open Lean Meta Elab Tactic in 
 #check evalSubst
+#check Syntax 
 
 open Lean Core Meta Elab Macro Tactic in 
 @[tactic MatchGoal.matchgoal]
@@ -154,11 +159,14 @@ def evalMatchgoal : Tactic := fun stx => -- (stx -> TacticM Unit)
   match stx with 
   | `(tactic| matchgoal 
         $[ $[ $hs? ];* ]?
-        ⊢ _ => $t ) => do sorry 
+        ⊢ _ => $t ) => do
+        return () 
       
   | `(tactic| matchgoal 
         $[ $[ $hs? ];* ]?
-        ⊢ $[ $g?:unification_expr ]? => $t ) => do sorry 
+        ⊢ $[ $g?:unification_expr ]? => $t ) => do 
+        IO.println g?
+        return () 
   -- let PatternCtx ←  do 
       -- if let .some g := g? then runGoalMatcher (← getMainDecl).type g -- first bind goal.
       -- if let .some hs := hs? then hs.forM runHypMatcher
@@ -168,11 +176,11 @@ end MatchGoal
 
 open MatchGoal in 
 example (n : Nat) : n - n = 0 := by 
-  matchgoal ⊢ (?x - ?x = 0) => rfl 
+  matchgoal ⊢ (?x - ?x = 0) => apply (Nat.sub_self ?x)
 
 open MatchGoal in 
 example (p: Prop) (prf : p) : p := by 
-  matchgoal (?H : ?prf) ⊢ ?prf => exact H
+  matchgoal (?H : ?prf) ⊢ ?prf => exact ?H
 
 open MatchGoal in 
 example (x : Int) : (if x > 0 then true else false = true) := by {
