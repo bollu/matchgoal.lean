@@ -20,22 +20,35 @@ open Lean Elab Meta Tactic Term Std RBMap
 
 declare_syntax_cat goal_matcher
 declare_syntax_cat hyp_matcher
-declare_syntax_cat hyps_matcher
 declare_syntax_cat unification_var
 declare_syntax_cat unification_expr
 
--- syntax "?" ident : unification_var
--- syntax unification_var : term -- allow unification variables to be used in terms.
+scoped syntax (name := var) "#" noWs ident : unification_var
 
-elab t:unification_var : term => do
-  -- build fake expression here
-  sorry
+-- macro_rules
+-- | `(identifier| # $i:unification_var) => sorry
+
+-- scoped syntax unification_var : term -- allow unification variables to be used in terms.
+
+-- every unification variable is a term.
+open Lean Elab in 
+scoped elab (name := var2term) t:unification_var : term => do
+  let s : Syntax ← 
+    match t with 
+    | `(unification_var| #$i:ident) => pure i
+    | _ => throwUnsupportedSyntax
+  elabTerm s (expectedType? := .none)
 
 
-scoped syntax unification_var : unification_expr -- this needs a converter
-scoped syntax term : unification_expr
-scoped syntax "(" unification_var ":" unification_expr ")" : hyp_matcher
-scoped syntax sepBy(hyp_matcher, ";") : hyps_matcher
+scoped syntax (name := var2expr) (priority := low) 
+  unification_var : unification_expr -- this needs a converter
+
+-- set this to have low priority because there are 2 ways in which vars can become exprs:
+-- 1. var -var2term-> term -term2expr-> expr
+-- 2. var -var2expr-> expr -> term
+scoped syntax (name := term2expr) (priority := 0) term : unification_expr
+scoped syntax (name := hyp) "(" unification_var ":" unification_expr ")" : hyp_matcher
+syntax hyps := sepBy(hyp_matcher, ";")
 
 structure MVar where
   id: MVarId
@@ -96,7 +109,7 @@ instance : Alternative MatchGoalM where
   failure := MatchGoalM.wrap (return [])
   orElse  mas unit2mas := MatchGoalM.wrap do return (← mas) ++ (← unit2mas ())
 def runUnificationVar (ctx: PatternCtx) (e: Expr): TSyntax `unification_var → MatchGoalM PatternCtx
-| `(unification_var| ?$i:ident) => do 
+| `(unification_var| #$i:ident) => do 
   match ctx.mvars.find? i.getId with 
   | .none => 
       ctx.restoreState
@@ -125,7 +138,7 @@ def runUnificationExpr (ctx: PatternCtx) (e: Expr) : TSyntax `unification_expr �
 
 open Lean Core Meta Elab Macro Tactic in 
 def runHypMatcher (ctx: PatternCtx) : TSyntax `hyp_matcher → MatchGoalM PatternCtx
-| `(hyp_matcher| (?$i:ident : $e:unification_expr)) => do 
+| `(hyp_matcher| (#$i:ident : $e:unification_expr)) => do 
     ctx.restoreState
     (← getMainDecl).lctx.decls.foldl (init := pure ctx) (fun mctx ldecl? => do 
       ctx.restoreState
@@ -146,7 +159,7 @@ def runHypMatcher (ctx: PatternCtx) : TSyntax `hyp_matcher → MatchGoalM Patter
 -- local syntax (name := matchgoal) 
 scoped syntax (name := matchgoal) 
   "matchgoal"
-  (hyps_matcher)?
+  (hyps)?
   "⊢" (( unification_expr)? <|>  "_") "=>" tactic : tactic
 
 open Lean Meta Elab Tactic in 
@@ -173,18 +186,3 @@ def evalMatchgoal : Tactic := fun stx => -- (stx -> TacticM Unit)
   | _ => throwUnsupportedSyntax
 
 end MatchGoal
-
-open MatchGoal in 
-example (n : Nat) : n - n = 0 := by 
-  matchgoal ⊢ (?x - ?x = 0) => apply (Nat.sub_self ?x)
-
-open MatchGoal in 
-example (p: Prop) (prf : p) : p := by 
-  matchgoal (?H : ?prf) ⊢ ?prf => exact ?H
-
-open MatchGoal in 
-example (x : Int) : (if x > 0 then true else false = true) := by {
-  matchgoal ⊢ if ?x then ?y else ?z => cases ?T:?x <;> simp[?T] -- TODO: we want ?T to be gensymd here.
-}
-
-def hello := "world"

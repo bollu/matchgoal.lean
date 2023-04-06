@@ -15,3 +15,4 @@ lean_exe «matchgoal» {
 }
 
 require std4 from git "https://github.com/leanprover/std4" @ "5507f9"
+require LSpec from git "git@github.com:lurk-lab/LSpec.git" @ "88f7d23"

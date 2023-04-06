@@ -43,9 +43,3 @@ instance [Monad m] [MonadState σ m] : MonadState σ (LogicT m) where
 instance [Monad m] : MonadLift m (LogicT m) where 
   monadLift ma := LogicT.mk do return #[← ma]
 
-#check MonadError
-instance [MonadError m] : MonadError (LogicT m) where 
-
-instance [MonadExceptOf ε m] [Monad m] : MonadExceptOf ε (LogicT m) where
-  throw err := LogicT.mk (do throw err)
-  tryCatch body handler := sorry -- TODO: think about this!
