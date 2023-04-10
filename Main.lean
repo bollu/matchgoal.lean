@@ -10,11 +10,9 @@ def eg1 (n : Nat) : n - n = 0 := by
 #print eg1
 #print eg1.proof_1
 
-  sorry
-
 open MatchGoal in
 example (p: Prop) (prf : p) : p := by
-  matchgoal (#H : #prf) ⊢ #prf => exact #H
+  matchgoal (#H : #prf) ⊢ #prf => xact #H
   sorry
 
 open MatchGoal in
