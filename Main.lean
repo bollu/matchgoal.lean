@@ -11,10 +11,11 @@ def eg1 (n : Nat) : n - n = 0 := by
 #print eg1.proof_1
 
 open MatchGoal in
-set_option trace.matchgoal true in
+set_option trace.matchgoal.debug true in
+set_option trace.matchgoal.debug.search true in
+set_option trace.matchgoal.debug.unify true in
 example (p: Prop) (prf : p) : p := by
   matchgoal (#H : #prf) ⊢ #prf => exact #H
-  sorry
 
 open MatchGoal in
 example (x : Int) : (if x > 0 then true else false = true) := by {

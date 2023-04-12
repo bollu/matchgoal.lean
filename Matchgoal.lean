@@ -69,16 +69,8 @@ open Lean Elab Meta Tactic in
 def MVar.getName (mvar : MVar) : TacticM Name := do
   mvar.id.getTag
 
-/-- introduce a new MVar, change the goal to the new goal, and return
-    the MVar of the introduced hypothesis -/
-def MVar.intro1P (mvar : MVar) : TacticM FVarId := do
-  let (hyp, newGoal) ← mvar.id.intro1P
-  if (← isDefEq (Expr.mvar newGoal) (Expr.mvar (← getMainGoal)))
-  then pure ()
-  else throwError s!"unable to unify new goal with old goal!"
-  replaceMainGoal [newGoal]
-  return hyp
-
+def MVar.assign (mvar : MVar) (e : Expr) : TacticM Unit :=
+  mvar.id.assign e
 def MVar.toExpr (mvar : MVar) : Expr := Expr.mvar mvar.id
 def MVar.ofExpr: Expr → TacticM MVar
 | .mvar id => return .mk id
@@ -92,7 +84,6 @@ instance : Coe MVar Expr where
   coe := MVar.toExpr
 
 structure PatternCtx where
-  tacticState : Option Tactic.SavedState
   mvars : Std.HashMap Name MVar := {}
   hyps : Std.HashMap Name FVarId := {} -- match hypothesis pattern names to real hypothesis names.
 deriving Inhabited
@@ -100,15 +91,9 @@ deriving Inhabited
 instance : ToMessageData PatternCtx where
   toMessageData pctx := Id.run do
     let mvars := MessageData.ofList <| pctx.mvars.toList.map (fun (k, v) =>  m!"{k} ↦ {v}")
-    m!"PatternCtx(tacticState?, {mvars})"
+    let hyps := MessageData.ofList <| pctx.hyps.toList.map fun (k, v) => m!"{k} ↦ {v.name}"
+    m!"PatternCtx(tacticState?, {mvars}, {hyps})"
 
-def PatternCtx.restoreState (ctx: PatternCtx) : TacticM Unit :=
-  match ctx.tacticState with
-  | .none => pure ()
-  | .some state => MonadBacktrack.restoreState state
-
-def PatternCtx.saveState (ctx: PatternCtx) : TacticM PatternCtx := do
-  return { ctx with tacticState := (← MonadBacktrack.saveState) }
 
 -- TODO: think about order of monads?
 -- is it (LogicT TacticM) or (TacticT LogicM) ?
@@ -156,10 +141,10 @@ instance : Alternative MatchGoalM where
 
 
 def unificationVarFillHoles (s : TSyntax `unification_var) : StateT PatternCtx TacticM Syntax := do
-  trace[matchgoal.unify.debug] m!"unifyV s:'{toString s}'?"
+  trace[matchgoal.debug.unify] m!"unifyV s:'{toString s}'?"
   match s with
   | `(unification_var| #$i:ident) | `(#$i:ident) => do -- TODO: should I match on 'unification_var' as well?
-    trace[matchgoal.unify.debug] m!"unifyV s:'{toString s}'!"
+    trace[matchgoal.debug.unify] m!"unifyV s:'{toString s}'!"
     -- TODO: we might need to 'gensym' custom names here.
     if let .some fvar := (← get).hyps.find? i.getId
     then let I : Quote Name := inferInstance; return (I.quote fvar.name).raw
@@ -179,7 +164,7 @@ def unificationVarFillHoles (s : TSyntax `unification_var) : StateT PatternCtx T
 -- TODO: how do I look inside a term and find unification variables?
 open Lean Core Meta Elab Macro Tactic in
 partial def unificationExprFillHoles (s : Syntax) : StateT PatternCtx TacticM Syntax := do
-  trace[matchgoal.unify.debug] "s:'{toString s}'"
+  trace[matchgoal.debug.unify] "s:'{toString s}'"
   match s with
   | `(term| $var:unification_var) => unificationVarFillHoles var
   | _ =>
@@ -227,8 +212,9 @@ partial def substitute (ctx : PatternCtx) (s : Syntax) : TacticM Syntax := do
          mvar.toSyntax
       | (.none, .some hyp) => do
            -- TODO: use `TSyntax` and not `Syntax`.
+           let userName ← hyp.getUserName
            let I : Lean.Quote Name := inferInstance
-           return (I.quote hyp.name).raw -- Dose this actually work?
+           return (I.quote userName).raw -- Dose this actually work?
       | (.some _, .some v) => do
           logErrorAt s <|
              MessageData.tagged `Tactic.Matchgoal <|
@@ -244,6 +230,10 @@ structure HypPattern where
   name : Name
   nameStx : TSyntax `ident -- for position information. -- TODO: create an abstraction.
   rhs : TSyntax `unification_expr
+
+instance : ToMessageData HypPattern where
+  toMessageData h := m!"{h.name} : {h.rhs}"
+
 
 
 def HypPattern.parse : TSyntax `hyp_matcher →  TacticM HypPattern
@@ -261,35 +251,13 @@ def MatchGoalM.branch (xs : List (MatchGoalM α)) : MatchGoalM α :=
       vs := vs ++ (← MatchGoalM.unwrap x)
     return vs
 
-/-
-def HypPattern.run (ctx: PatternCtx) (hpat : HypPattern) : MatchGoalM PatternCtx := do
-    ctx.restoreState
-    let pats := (← getMainDecl).lctx.decls.map (fun ldecl? => do
-      ctx.restoreState
-      match ldecl? with
-      | .none => return ctx
-      | .some ldecl =>
-        let ldeclType : Expr ← inferType ldecl.toExpr
-        -- | TODO: refactor code duplication
-        let (hpatfilled, newctx) ← (unificationExprFillHoles hpat.rhs.raw).run ctx
-        let hpatfilled : TSyntax `unification_expr := ⟨hpatfilled⟩
-        let hpatfilledterm ←  monadLift (m := TacticM) <| `([unification_expr| $hpatfilled])
-        let hpatexpr ← Tactic.elabTerm hpatfilledterm (expectedType? := .none)
-        if ← isDefEq hpatexpr ldeclType
-        then
-          -- create a new hypothesis of th form [hpat.name : <type> := match]
-          pure newctx
-        else failure
-      )
-    MatchGoalM.branch pats.toList -- give all possible choices.
--/
-
 #check intro1P
 #check MetaM
 
 open Lean Core Elab Meta Macro Tactic in
 def HypPattern.unify (pctx: PatternCtx) (hpat : HypPattern) (ldecl: LocalDecl) : TacticM (Option PatternCtx) := do
     let ldeclType : Expr ← inferType ldecl.toExpr
+    trace[matchgoal.debug.unify] "HypPattern.unify {pctx} : {hpat} =?= {ldeclType}"
     -- | TODO: refactor code duplication
     let (hpatfilled, newctx) ← (unificationExprFillHoles hpat.rhs.raw).run pctx
     let hpatfilled : TSyntax `unification_expr := ⟨hpatfilled⟩
@@ -297,14 +265,21 @@ def HypPattern.unify (pctx: PatternCtx) (hpat : HypPattern) (ldecl: LocalDecl) :
     let hpatexpr ← Tactic.elabTerm hpatfilledterm (expectedType? := .none)
     if ← isDefEq hpatexpr ldeclType
     then do
+        trace[matchgoal.debug.unify] "SUCCESS: HypPattern.unify {pctx} : {hpat} === {ldeclType}"
         let hypMVar : Expr ← mkFreshExprMVar (type? := .none) (userName := hpat.name)
         let hypMVar : MVar ← MVar.ofExpr hypMVar
-        match ← isDefEq hypMVar hpatexpr with
-        | .false => throwError m!"unexpected failure, this must always unify!"
-        | .true => pure ()
-        -- create a new hypothesis of th form [hpat.name : <type> := match]
-        pure (.some { pctx with hyps := pctx.hyps.insert hpat.name (← hypMVar.intro1P) })
-    else return .none
+        hypMVar.assign hpatexpr
+        -- TODO: ask Henrik if this is the optimal way.
+        -- Convert the given goal `Ctx |- target` into `Ctx |- type -> target`.
+        let newgoal ← (← getMainGoal).assert hpat.name ldeclType hpatexpr
+        -- `intros` the arrow.
+        let (hypFVar, newgoal) ← newgoal.intro1P
+        replaceMainGoal [newgoal]
+        pure (.some { pctx with hyps := pctx.hyps.insert hpat.name hypFVar })
+    else
+      trace[matchgoal.debug.unify] "FAILURE: HypPattern.unify {pctx} : {hpat} =!= {ldeclType}"
+      return .none
+
 
 /-- match goal tactic -/
 -- TODO: why does 'local syntax' not work?
@@ -323,16 +298,20 @@ def depthFirstSearchHyps
   (ctx : PatternCtx) : TacticM Bool :=  do
   match hyppats with
   | [] => do
-      trace[matchgoal.search.debug]
-        m!"substituting into '{tac}' from context {ctx}" -- TODO: make {ctx} nested
+      trace[matchgoal.debug.search] m!"substituting into '{tac}' from context {ctx}" -- TODO: make {ctx} nested
       let tac ← substitute ctx tac
-      trace[matchgoal.search.debug] m!"running tactic '{tac}'."
+      trace[matchgoal.debug.search] m!"running tactic '{tac}'."
       match ← tryTactic? (evalTactic tac) with
-      | .some () => return true
-      | _ => return false
+      | .some () =>
+         trace[matchgoal.debug.search] m!"SUCCESS running '{tac}'."
+         return true
+      | _ =>
+        trace[matchgoal.debug.search] m!"FAILURE running '{tac}'."
+        return false
   | hyppat :: hyppats' =>
      let stateBeforeUnif ← Tactic.saveState
      for hyp in (← getMainDecl).lctx do
+       if hyp.isImplementationDetail then continue
        stateBeforeUnif.restore -- bring back state before unifying.
        if let .some ctx'  ← hyppat.unify ctx hyp then
          if  (← depthFirstSearchHyps tac hyppats' ctx')
