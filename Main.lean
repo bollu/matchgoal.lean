@@ -11,6 +11,7 @@ def eg1 (n : Nat) : n - n = 0 := by
 #print eg1.proof_1
 
 open MatchGoal in
+set_option trace.matchgoal true in
 example (p: Prop) (prf : p) : p := by
   matchgoal (#H : #prf) ⊢ #prf => exact #H
   sorry
