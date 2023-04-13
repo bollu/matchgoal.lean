@@ -20,10 +20,13 @@ def eg2 (p: Prop) (prf : p) : p := by
 #print eg2.proof_1
 
 open MatchGoal in
-def eg3 (x : Int) : (if x > 0 then true else false = true) := by {
+set_option trace.matchgoal.debug true in
+set_option trace.matchgoal.debug.search true in
+set_option trace.matchgoal.debug.matcher true in
+def eg3 (x : Int) : (if x > 0 then true else false) := by {
   simp
   -- | TODO: need support for 'cases'
-  matchgoal ⊢ if #k then #foo else #bar => simp
+  matchgoal ⊢ if #k then True else False => let foo := 1
   sorry
 }
 
