@@ -303,6 +303,20 @@ Our contributions are:
 	\arrow["{\texttt{delab}}"{description}, from=2-3, to=2-1]
 \end{tikzcd}\]
 
+\section{Pure elaboration based approach}
+
+If we start with a pattern \texttt{patStx}, elaborate it to \texttt{patExpr} so we can call
+\texttt{isDefEq} on \texttt{groundExpr}, then the elaboratoin fails, because in the case
+of a pattern like \texttt{if \#b then 1 else 0}, lean tries to synthesize a \texttt{DecidableEq ?b} instance
+for \texttt{\#b}, which it indeed does not have enough information to create.
+
+\section{Pure delaboration based approach}
+
+If we start with the ground expression \texttt{grndExpr}, and we try to delaborate it into
+\texttt{grndStx} to match against \texttt{patStx}, we get a strange issue where trivial
+syntactic niceties like whitespace start to matter. If we try to match against \texttt{ \#x - \#x = 0},
+then we get errors where \texttt{FAILURE atom '-' /= ' - ' }.
+
 %% Acknowledgments
 \begin{acks}                            %% acks environment is optional
                                         %% contents suppressed with 'anonymous'
