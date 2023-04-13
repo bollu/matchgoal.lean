@@ -174,12 +174,10 @@ def PatternHyp.matcher (pctx: PatternCtx)
     let hpatexpr ← Tactic.elabTerm hpatfilledterm (expectedType? := .none)
     if ← isDefEq hpatexpr ldeclType
     then do
-        trace[matchgoal.debug.matcher] "SUCCESS: PatternHyp.matcher {pctx} : {hpat} === {ldeclType}"
-        let hypMVar : MVarId := (← mkFreshExprMVar (type? := .none) (userName := hpat.name)).mvarId!
-        hypMVar.assign hpatexpr
         -- TODO: ask Henrik if this is the optimal way.
         -- Convert the given goal `Ctx |- target` into `Ctx |- type -> target`.
-        let newgoal ← (← getMainGoal).assert hpat.name ldeclType hpatexpr
+        -- let newgoal ← (← getMainGoal).assert hpat.name ldeclType hpatexpr
+        let newgoal ← (← getMainGoal).assert hpat.name ldeclType ldecl.toExpr
         -- `intros` the arrow.
         let (hypFVar, newgoal) ← newgoal.intro1P
         replaceMainGoal [newgoal]
@@ -209,6 +207,7 @@ def depthFirstSearchHyps
   match hyppats with
   | [] => do
      let mut pctx := pctx
+     let stateBeforeMatcher ← Tactic.saveState
      if let .some gpat := gpat? then
        let (gpatfilled, pctx') ← (stxholes2mvars gpat).run pctx
        let gpatfilled : TSyntax `pattern_expr := ⟨gpatfilled⟩
@@ -218,23 +217,24 @@ def depthFirstSearchHyps
        if not (← isDefEq gpatexpr (← getMainTarget)) then
         logErrorAt gpat
           <| MessageData.tagged `Tactic.Matchgoal <| m! "unable to matcher goal pattern {gpatexpr} with goal {← getMainTarget}"
-    -- We have now matched goal, let's matcher hyps.
+        restoreState stateBeforeMatcher
       trace[matchgoal.debug.search] m!"STEP: preparing to run tactic '{tac}'."
       trace[matchgoal.debug.search] m!"replacing into '{tac}' from context {pctx}" -- TODO: make {ctx} nested
       let tac ← match ← replace pctx tac with
-        | .some t => trace[matchgoal.debug.search] m!"XXXjdalksdjas"; pure t
-        | .none => trace[matchgoal.debug] m!"SAJDKSADJKSADSA";  return False
+        | .some t => pure t
+        | .none =>
+          restoreState stateBeforeMatcher
+          return False
       trace[matchgoal.debug] m!"========================="
       trace[matchgoal.debug.search] m!"STEP: running tactic '{tac}'."
       if ← tryTactic (evalTactic tac) then
         trace[matchgoal.debug.search] m!"SUCCESS running '{tac}'."
         dbg_trace s!"SUCCESS running '{tac}'."
-        IO.eprintln "XXXXXXXXXXX"
         return true
       else
         trace[matchgoal.debug.search] m!"FAILURE running '{tac}'."
         dbg_trace s!"FAILURE running {tac}'."
-        IO.eprintln "YYYYYYYYY"
+        restoreState stateBeforeMatcher
         return false
   | hyppat :: hyppats' =>
      let stateBeforeMatcher ← Tactic.saveState
@@ -243,7 +243,6 @@ def depthFirstSearchHyps
        stateBeforeMatcher.restore -- bring back state before matchering.
        if let .some ctx'  ← hyppat.matcher pctx hyp then
          if  (← depthFirstSearchHyps tac hyppats' ctx' gpat?) then
-          IO.eprintln "XXXXXXXXXXX"
           return true
      stateBeforeMatcher.restore
      return False
