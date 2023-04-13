@@ -1,0 +1,333 @@
+\def\paperversiondraft{draft}
+\def\paperversionblind{normal}
+\def\paperversioncameraACM{cameraACM}
+
+% If no draft paper-version is requested, compile in 'normal' mode
+\ifx\paperversion\paperversiondraft
+\else
+  \ifx\paperversion\paperversioncameraACM
+  \else
+  \def\paperversion{normal}
+  \fi
+\fi
+
+\ifx\paperversion\paperversioncameraACM
+  \documentclass[sigplan]{acmart}
+\else
+  \documentclass[review, anonymous, sigplan]{acmart}
+\fi
+
+\def\acmversionanonymous{anonymous}
+\def\acmversionjournal{journal}
+\def\acmversionnone{none}
+
+\makeatletter
+\if@ACM@anonymous
+  \def\acmversion{anonymous}
+\else
+  \def\acmversion{journal}
+\fi
+\makeatother
+
+
+% https://users.cs.northwestern.edu/~jesse/code/latex/ottalt/Makefile
+% \usepackage{ottalt}
+\usepackage{colortbl}
+
+% 'draftonly' environment
+\usepackage{environ}
+\ifx\paperversion\paperversiondraft
+\newenvironment{draftonly}{}{}
+\else
+\NewEnviron{draftonly}{}
+\fi
+
+% Most PL conferences are edited by conference-publishing.com. Follow their
+% advice to add the following packages.
+%
+% The first enables the use of UTF-8 as character encoding, which is the
+% standard nowadays. The second ensures the use of font encodings that support
+% accented characters etc. (Why should I use this?). The mictotype package
+% enables certain features 'to­wards ty­po­graph­i­cal per­fec­tion
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{microtype}
+
+\usepackage{minted}
+\usemintedstyle{colorful}
+% \newminted[mlir]{tools/MLIRLexer.py:MLIRLexerOnlyOps -x}{mathescape}
+% \newminted[xdsl]{tools/MLIRLexer.py:MLIRLexer -x}{mathescape, style=murphy}
+
+% \usepackage{amsmath}
+% \usepackage{amssymb}
+\usepackage{xargs}
+\usepackage{lipsum}
+\usepackage{xparse}
+\usepackage{xifthen, xstring}
+\usepackage{xspace}
+\usepackage{marginnote}
+\usepackage{etoolbox}
+\usepackage{tikz}
+\usepackage{quiver}
+
+\input{tex/setup.tex}
+\input{tex/acm.tex}
+
+% We use the following color scheme
+%
+% This scheme is both print-friendly and colorblind safe for
+% up to four colors (including the red tones makes it not
+% colorblind safe any more)
+%
+% https://colorbrewer2.org/#type=qualitative&scheme=Paired&n=4
+
+\definecolor{pairedNegOneLightGray}{HTML}{cacaca}
+\definecolor{pairedNegTwoDarkGray}{HTML}{827b7b}
+\definecolor{pairedOneLightBlue}{HTML}{a6cee3}
+\definecolor{pairedTwoDarkBlue}{HTML}{1f78b4}
+\definecolor{pairedThreeLightGreen}{HTML}{b2df8a}
+\definecolor{pairedFourDarkGreen}{HTML}{33a02c}
+\definecolor{pairedFiveLightRed}{HTML}{fb9a99}
+\definecolor{pairedSixDarkRed}{HTML}{e31a1c}
+
+\createtodoauthor{grosser}{pairedOneLightBlue}
+\createtodoauthor{bollu}{pairedTwoDarkBlue}
+\createtodoauthor{authorThree}{pairedThreeLightGreen}
+\createtodoauthor{authorFour}{pairedFourDarkGreen}
+\createtodoauthor{authorFive}{pairedFiveLightRed}
+\createtodoauthor{authorSix}{pairedSixDarkRed}
+
+\graphicspath{{./images/}}
+
+% Define macros that are used in this paper
+%
+% We require all macros to end with a delimiter (by default {}) to enusure
+% that LaTeX adds whitespace correctly.
+\makeatletter
+\newcommand\requiredelimiter[2][########]{%
+  \ifdefined#2%
+    \def\@temp{\def#2#1}%
+    \expandafter\@temp\expandafter{#2}%
+  \else
+    \@latex@error{\noexpand#2undefined}\@ehc
+  \fi
+}
+\@onlypreamble\requiredelimiter
+\makeatother
+
+\newcommand\newdelimitedcommand[2]{
+\expandafter\newcommand\csname #1\endcsname{#2}
+\expandafter\requiredelimiter
+\csname #1 \endcsname
+}
+
+
+\newcommand{\mlir}{\ensuremath{\texttt{MLIR}}}
+\requiredelimiter{\mlir}
+
+\newcommand{\mlirflat}{\ensuremath{\texttt{MLIR}^\flat}}
+\requiredelimiter{\mlirflat}
+
+\newcommand{\val}{\ensuremath{\texttt{Val}}}
+\requiredelimiter{\val}
+
+\newcommand{\stxlet}{\ensuremath{\texttt{let}}}
+\requiredelimiter{\stxlet}
+
+\newcommand{\stxMLIR}{\ensuremath{\texttt{stxMLIR}}}
+\requiredelimiter{\stxMLIR}
+
+\newcommand{\denoteMLIR}[1]{\ensuremath{\llbracket \texttt{MLIR}(#1) \rrbracket}}
+
+\newcommand{\libMLIR}{\ensuremath{\texttt{libMLIR}}}
+\requiredelimiter{\libMLIR}
+
+\newcommand{\implMLIR}[1]{\ensuremath{\texttt{implMLIR(#1)}}}
+
+\newdelimitedcommand{toolname}{Tool}
+
+\usepackage{booktabs}
+\newcommand{\ra}[1]{\renewcommand{\arraystretch}{#1}}
+
+% \circled command to print a colored circle.
+% \circled{1} pretty-prints "(1)"
+% This is useful to refer to labels that are embedded within figures.
+\usepackage{tikz}
+\usetikzlibrary{arrows}
+\usetikzlibrary{shapes}
+\DeclareRobustCommand\circled[2][]{\ifthenelse{\isempty{#1}}{\tikz[baseline=(char.base)]{\node[shape=circle,fill=pairedOneLightBlue,inner sep=1pt] (char) {#2};}}{\autoref{#1}: \hyperref[#1]{\tikz[baseline=(char.base)]{\node[shape=circle,fill=pairedOneLightBlue,inner sep=1pt] (char) {#2};}}}}
+
+
+
+% listings don't write "Listing" in autoref without this.
+\providecommand*{\listingautorefname}{Listing}
+
+\begin{document}
+
+%% Title information
+\title{\mlir{}: Its Syntax and Semantics}
+                                      %% when present, will be used in
+                                      %% header instead of Full Title.
+% \subtitle{Subtitle}                   %% \subtitle is optional
+
+
+%% Author information
+%% Contents and number of authors suppressed with 'anonymous'.
+%% Each author should be introduced by \author, followed by
+%% \authornote (optional), \orcid (optional), \affiliation, and
+%% \email.
+%% An author may have multiple affiliations and/or emails; repeat the
+%% appropriate command.
+%% Many elements are not rendered, but should be provided for metadata
+%% extraction tools.
+\author{First1 Last1}
+\authornote{with author1 note}          %% \authornote is optional;
+                                      %% can be repeated if necessary
+\orcid{nnnn-nnnn-nnnn-nnnn}             %% \orcid is optional
+\affiliation{
+  \position{Position1}
+  \department{Department1}              %% \department is recommended
+  \institution{Institution1}            %% \institution is required
+  \streetaddress{Street1 Address1}
+  \city{City1}
+  \state{State1}
+  \postcode{Post-Code1}
+  \country{Country1}
+}
+\email{first1.last1@inst1.edu}          %% \email is recommended
+
+\author{First2 Last2}
+\authornote{with author2 note}          %% \authornote is optional;
+                                      %% can be repeated if necessary
+\orcid{nnnn-nnnn-nnnn-nnnn}             %% \orcid is optional
+\affiliation{
+  \position{Position2a}
+  \department{Department2a}             %% \department is recommended
+  \institution{Institution2a}           %% \institution is required
+  \streetaddress{Street2a Address2a}
+  \city{City2a}
+  \state{State2a}
+  \postcode{Post-Code2a}
+  \country{Country2a}
+}
+\email{first2.last2@inst2a.com}         %% \email is recommended
+\affiliation{
+  \position{Position2b}
+  \department{Department2b}             %% \department is recommended
+  \institution{Institution2b}           %% \institution is required
+  \streetaddress{Street3b Address2b}
+  \city{City2b}
+  \state{State2b}
+  \postcode{Post-Code2b}
+  \country{Country2b}
+}
+\email{first2.last2@inst2b.org}         %% \email is recommended
+
+\begin{abstract}
+% An abstract should consist of six main sentences:
+%  1. Introduction. In one sentence, what’s the topic?
+%  2. State the problem you tackle.
+%  3. Summarize (in one sentence) why nobody else has adequately answered the research question yet.
+%  4. Explain, in one sentence, how you tackled the research question.
+%  5. In one sentence, how did you go about doing the research that follows from your big idea.
+%  6. As a single sentence, what’s the key impact of your research?
+
+% (http://www.easterbrook.ca/steve/2010/01/how-to-write-a-scientific-abstract-in-six-easy-steps/)
+
+\end{abstract}
+
+% Only add ACM notes and keywords in camera ready version
+% Drop citations and footnotes in draft and blind mode.
+\ifx\acmversion\acmversionanonymous
+\settopmatter{printacmref=false} % Removes citation information below abstract
+\renewcommand\footnotetextcopyrightpermission[1]{} % removes footnote with conference information in first column
+\fi
+\ifx\acmversion\acmversionjournal
+%% 2012 ACM Computing Classification System (CSS) concepts
+%% Generate at 'http://dl.acm.org/ccs/ccs.cfm'.
+\begin{CCSXML}
+<ccs2012>
+<concept>
+<concept_id>10011007.10011006.10011008</concept_id>
+<concept_desc>Software and its engineering~General programming languages</concept_desc>
+<concept_significance>500</concept_significance>
+</concept>
+<concept>
+<concept_id>10003456.10003457.10003521.10003525</concept_id>
+<concept_desc>Social and professional topics~History of programming languages</concept_desc>
+<concept_significance>300</concept_significance>
+</concept>
+</ccs2012>
+\end{CCSXML}
+
+\ccsdesc[500]{Software and its engineering~General programming languages}
+\ccsdesc[300]{Social and professional topics~History of programming languages}
+%% End of generated code
+
+%% Keywords
+%% comma separated list
+\keywords{keyword1, keyword2, keyword3}
+\fi
+
+%% \maketitle
+%% Note: \maketitle command must come after title commands, author
+%% commands, abstract environment, Computing Classification System
+%% environment and commands, and keywords command.
+\maketitle
+
+% \input{ott/lc.nowrap.tex}
+
+\section{Introduction}
+
+
+Our contributions are:
+\begin{itemize}
+\item A new tactic, \texttt{matchgoal.lean} to automate syntax-heavy proofs that occur
+        commonly in programming language theory.
+\item A formal semantics of the tactic, which supplements the current
+        of the informal english prose of the Coq documentation.
+\item A discussion of how Lean's extensible macro system makes syntactic matching
+        more complex, and how we design our tactic to deal with the complexities that arise
+        from Lean's extensible design.
+\end{itemize}
+
+\section{Syntax and Expr}
+% https://q.uiver.app/?q=WzAsNixbMCwyLCJcXHRleHR0dHtpZiA/YiB0aGVuIDEgZWxzZSAwfSJdLFsyLDIsIlxcdGV4dHR0e2l0ZSBtdmFyLmIgKH0gXFxsYW1iZGEuIFxcdGV4dHR0e1xcX30gXFxSaWdodGFycm93IFxcdGV4dHR0ezEpfSBcXHRleHR0dHsofSBcXGxhbWJkYS4gXFx0ZXh0dHR7XFxffSBcXFJpZ2h0YXJyb3cgXFx0ZXh0dHR7MCl9Il0sWzIsMSwiXFx0ZXh0dHR7aXRlIGMgKH0gXFxsYW1iZGEuIFxcdGV4dHR0e1xcX30gXFxSaWdodGFycm93IFxcdGV4dHR0ezEpfSBcXHRleHR0dHsofSBcXGxhbWJkYS4gXFx0ZXh0dHR7XFxffSBcXFJpZ2h0YXJyb3cgXFx0ZXh0dHR7MCl9Il0sWzAsMSwiXFx0ZXh0dHR7aWYgYyB0aGVuIDEgZWxzZSAwfSJdLFsyLDAsIlxcdGV4dHR0e0V4cHJ9Il0sWzAsMCwiXFx0ZXh0dHR7U3ludGF4fSJdLFszLDAsIlxcdGV4dHR0e1VuaWZ5fSIsMix7InN0eWxlIjp7ImJvZHkiOnsibmFtZSI6InNxdWlnZ2x5In0sImhlYWQiOnsibmFtZSI6Im5vbmUifX19XSxbMiwxLCJcXHRleHR0dHtVbmlmeSB1cHRvIERlZkVxfSIsMCx7InN0eWxlIjp7ImJvZHkiOnsibmFtZSI6InNxdWlnZ2x5In0sImhlYWQiOnsibmFtZSI6Im5vbmUifX19XSxbMCwxLCJcXHRleHR0dHtlbGFifSIsMV0sWzIsMywiXFx0ZXh0dHR7ZGVsYWJ9IiwxXV0=
+\[\begin{tikzcd}
+	{\texttt{Syntax}} && {\texttt{Expr}} \\
+	{\texttt{if c then 1 else 0}} && {\texttt{ite c (} \lambda. \texttt{\_} \Rightarrow \texttt{1)} \texttt{(} \lambda. \texttt{\_} \Rightarrow \texttt{0)}} \\
+	{\texttt{if ?b then 1 else 0}} && {\texttt{ite mvar.b (} \lambda. \texttt{\_} \Rightarrow \texttt{1)} \texttt{(} \lambda. \texttt{\_} \Rightarrow \texttt{0)}}
+	\arrow["{\texttt{Unify}}"', squiggly, no head, from=2-1, to=3-1]
+	\arrow["{\texttt{Unify upto DefEq}}", squiggly, no head, from=2-3, to=3-3]
+	\arrow["{\texttt{elab}}"{description}, from=3-1, to=3-3]
+	\arrow["{\texttt{delab}}"{description}, from=2-3, to=2-1]
+\end{tikzcd}\]
+
+%% Acknowledgments
+\begin{acks}                            %% acks environment is optional
+                                        %% contents suppressed with 'anonymous'
+  %% Commands \grantsponsor{<sponsorID>}{<name>}{<url>} and
+  %% \grantnum[<url>]{<sponsorID>}{<number>} should be used to
+  %% acknowledge financial support and will be used by metadata
+  %% extraction tools.
+  This material is based upon work supported by the
+  \grantsponsor{GS100000001}{National Science
+    Foundation}{http://dx.doi.org/10.13039/100000001} under Grant
+  No.~\grantnum{GS100000001}{nnnnnnn} and Grant
+  No.~\grantnum{GS100000001}{mmmmmmm}.  Any opinions, findings, and
+  conclusions or recommendations expressed in this material are those
+  of the author and do not necessarily reflect the views of the
+  National Science Foundation.
+\end{acks}
+
+%% Bibliography
+\bibliography{references}
+
+
+
+\end{document}
+
+
+%%% Local Variables:
+%%% TeX-command-extra-options: "-shell-escape"
+%%% End:
