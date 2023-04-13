@@ -8,6 +8,8 @@ import Lean.Elab.Tactic.Rewrite
 import Lean.Elab.Tactic.ElabTerm
 import Lean.Elab.Tactic.Location
 import Lean.Elab.Tactic.Config
+import Lean.PrettyPrinter
+import Lean.PrettyPrinter.Delaborator
 import Lean.Data.Json
 import Matchgoal.Trace
 import Matchgoal.LogicT
@@ -72,6 +74,22 @@ macro_rules
 
 syntax hyps := sepBy(pattern_hyp, "; ")
 
+structure Depth where
+  depth : Nat := 0
+
+def Depth.increment (d: Depth) : Depth where
+  depth := d.depth + 1
+
+instance : ToString Depth where
+  toString d := Id.run do
+    let rec go (s : String) : Nat → String 
+    | 0 => s
+    | n' + 1 =>  go (s ++ " |") n'
+    go "" d.depth
+
+instance : ToMessageData Depth where
+  toMessageData d := toString d
+
 
 structure PatternHyp where
   /-- for position information. TODO: pull position out of the raw Tsyntax? -/
@@ -117,89 +135,56 @@ def isSyntaxEq (s : Syntax) (t : Syntax) : Bool :=
   | _, _ => false
 
 -- Match the syntax 's' against the syntax 't', where 's' is allowed to have patterns.
-partial def matcher (pctx : PatternCtx) (s : Syntax) (t : Syntax): TacticM (Option PatternCtx) := do
-  trace[matchgoal.debug] "replace s:'{toString s}'"
-  match s with -- [Char] --Parser--> Syntax
+partial def stxMatcher (depth : Depth) (pctx : PatternCtx) (s : Syntax) (t : Syntax): TacticM (Option PatternCtx) := do
+  trace[matchgoal.debug] "{depth}stxMatcher: '{s}' =?= '{t}'"
+  match s with 
+  | `(pattern_expr| $s':term) =>  do
+    trace[matchgoal.debug] "{depth}stxMatcher: SUCCESS pattern_expr unwrap."
+    stxMatcher depth pctx s' t
   | `(pattern_term_var| #$i:ident) | `(term| #$i:ident) => do
-     trace[matchgoal.debug] "replace in ident '{i}'"
       match pctx.mvars.find? i.getId with
-      | .none => return .some { pctx with mvars := pctx.mvars.insert i.getId t }
+      | .none => 
+        trace[matchgoal.debug] "{depth}stxMatcher: SUCCESS assigned #{i} := 't'"
+        return .some { pctx with mvars := pctx.mvars.insert i.getId t }
       | .some mvarStx =>
-        match (← matcher pctx mvarStx t) with
-        | .none => return .none
-        | .some pctx' => return .some pctx'
+        match (← stxMatcher depth.increment pctx mvarStx t) with
+        | .none => 
+          trace[matchgoal.debug] "{depth}stxMatcher: FAILURE"
+          return .none
+        | .some pctx' =>
+          trace[matchgoal.debug] "{depth}stxMatcher: SUCCESS"
+          return .some pctx'
   | _ =>
     match s, t with
-    | Syntax.missing, Syntax.missing => return .some pctx
+    | Syntax.missing, Syntax.missing => do 
+      trace[matchgoal.debug] "{depth}stxMatcher: SUCCESS"
+      return .some pctx
     | Syntax.atom  (val := sval) ..  , Syntax.atom (val := tval) .. =>
-      return if sval = tval then .some pctx else .none
+      if sval = tval then
+        trace[matchgoal.debug] "{depth}stxMatcher: SUCCESS atom '{sval}' = '{tval}'"
+        return .some pctx
+      else
+        trace[matchgoal.debug] "{depth}stxMatcher: FAILURE atom '{sval}' /= '{tval}'"
+        return .none
     | Syntax.ident (val := sval) .., .ident (val := tval) .. =>
-      return if sval = tval then .some pctx else .none
+      if sval = tval then
+        trace[matchgoal.debug] "{depth}stxMatcher: SUCCESS ident '{sval}' = '{tval}'"
+        return .some pctx
+      else 
+        trace[matchgoal.debug] "{depth}stxMatcher: FAILURE ident '{sval}' /= '{tval}'"
+        return .none
     | .node (kind := skind) (args := sargs) .., .node (kind := tkind) (args := targs) .. => do
-        if skind != tkind then return .none
+        if skind != tkind then
+          trace[matchgoal.debug] "{depth}stxMatcher: FAILURE node '{skind}' /= '{tkind}'"
+          return .none
         else
           let mut pctx := pctx
           for (sarg, targ) in sargs.zip targs do
-            match ← matcher pctx sarg targ with
+            match ← stxMatcher depth.increment pctx sarg targ with
             | .none => return .none
             | .some pctx' => pctx := pctx'
           return .some pctx
     | _, _ => return .none
-
-
-  -- | `(pattern_hyp_var| ^$i:ident) | `(term| ^$i:ident) => do
-  --     match pctx.hyps.find? i.getId with
-  --     | .none => do
-  --        trace[matchgoal.debug.matcher] m!"Matchgoal hypothesis variable {i} has not been unified when replacing syntax '{s}'. This is an error."
-  --        return .none
-  --     | .some (hypPat, _) => do return hypPat.nameStx
-  -- | _ =>
-  --   match s with
-  --   | Syntax.node info kind args => do
-  --       let mut args' := #[]
-  --       for a in args do
-  --          match ← replace pctx a with
-  --          | .some a' => args' := args'.push a'
-  --          | .none => return .none
-  --       return Syntax.node info kind args'
-  --   | Syntax.missing | Syntax.atom .. | Syntax.ident .. => return s
-
-
-/-- Instantiate all unification variables in the expression and create a real Lean term.
-    Also update the state to recored new unification variables -/
-partial def matchAndElab (s : Syntax) (target : Syntax) : StateT PatternCtx TacticM (Option Syntax) := do
-  -- trace[matchgoal.debug.matcher] "s:'{toString s}'"
-  match s with
-  | `(term| $i:ident) | `(pattern_term_var| #$i:ident) =>
-    match (← get).mvars.find? i.getId with
-    | .some mvarId => (Expr.mvar mvarId).toSyntax
-    | .none =>
-        let mvarId := (← mkFreshExprMVar
-            (type? := .none) (userName := i.getId) (kind := .natural)).mvarId!
-        mvarId.assign (← Tactic.elabTerm target (mayPostpone := true) (expectedType? := .none))
-        modify (fun ctx => { ctx with mvars := ctx.mvars.insert i.getId mvarId })
-        (Expr.mvar mvarId).toSyntax -- TODO: surely there is a helper for this?
-  | _ =>
-    match s with
-    | Syntax.missing | Syntax.atom .. | Syntax.ident .. =>
-         if s == target then -- WRONG!
-           return s
-         else
-           trace[matchgoal.debug.matcher] m!"unable to match '{s}' to '{target}'"
-           return .none
-    | Syntax.node info kind args =>
-         match target with
-         | Syntax.node info' kind' args' =>
-           if kind ≠ kind' || args.size ≠ args'.size then
-             trace[matchgoal.debug.matcher] m!"unable to match '{s}' to '{target}'"
-             return .none
-           else
-             for (arg, arg') in args.zip args' do
-               xxxadsad
-               return Syntax.node info kind (← args.mapM stxholes2mvars) do
-         | _ =>
-           trace[matchgoal.debug.matcher] m!"unable to match '{s}' to '{target}'"
-           return .none
 
 open Lean Elab Macro Tactic in
 /--
@@ -221,7 +206,7 @@ partial def replace (pctx : PatternCtx) (s : Syntax) : TacticM (Option Syntax) :
            MessageData.tagged `Tactic.Matchgoal <|
            m!"Matchgoal variable {i} has not been unified when replacing syntax '{s}'. This is an error."
          return .none
-      | .some mvar => return ← (Expr.mvar mvar).toSyntax
+      | .some stx => return stx
   | `(pattern_hyp_var| ^$i:ident) | `(term| ^$i:ident) => do
       match pctx.hyps.find? i.getId with
       | .none => do
@@ -241,48 +226,31 @@ partial def replace (pctx : PatternCtx) (s : Syntax) : TacticM (Option Syntax) :
 
 
 
-open Lean Core Elab Meta Macro Tactic in
-def PatternHyp.matcher (pctx: PatternCtx)
+open Lean Core Elab Meta Macro Tactic PrettyPrinter in
+def PatternHyp.matcher (depth : Depth) ( pctx: PatternCtx)
   (hpat : PatternHyp)
   (ldecl: LocalDecl) : TacticM (Option PatternCtx) := do
-    let ldeclType : Expr ← inferType ldecl.toExpr
-    trace[matchgoal.debug.matcher] "PatternHyp.matcher {pctx} : {hpat} =?= {ldeclType}"
-    -- | TODO: refactor code duplication
-    let (hpatfilled, pctx) ← (stxholes2mvars hpat.rhs.raw).run pctx
-    let hpatfilled : TSyntax `pattern_expr := ⟨hpatfilled⟩
-    let hpatfilledterm : TSyntax `term ←  monadLift (m := TacticM) <| `([pattern_expr| $hpatfilled])
-    let hpatexpr ← Tactic.elabTerm hpatfilledterm (expectedType? := .none) (mayPostpone := .true)
-    if ← isDefEq hpatexpr ldeclType -- Makes me sad because TC resolution is sad.
-    then do
-        -- TODO: ask Henrik if this is the optimal way.
+    let mut pctx := pctx
+    let ldeclType : Expr := ldecl.type
+    let ldeclStx : Syntax ← delab ldeclType
+    match (← stxMatcher depth.increment pctx hpat.rhs.raw ldeclStx) with 
+    | .none => 
+      trace[matchgoal.debug.matcher] "FAILURE: PatternHyp.matcher {pctx} : {hpat} =!= {ldeclStx}"
+      return .none
+    | .some pctx' => 
+      trace[matchgoal.debug.matcher] "SUCCESS: PatternHyp.matcher {pctx} : {hpat} === {ldeclStx}"
+      pctx := pctx'
         -- Convert the given goal `Ctx |- target` into `Ctx |- type -> target`.
         -- let newgoal ← (← getMainGoal).assert hpat.name ldeclType hpatexpr
         let newgoal ← (← getMainGoal).assert hpat.name ldeclType ldecl.toExpr
         -- `intros` the arrow.
         let (hypFVar, newgoal) ← newgoal.intro1P
         replaceMainGoal [newgoal]
-        pure (.some { pctx with hyps := pctx.hyps.insert hpat.name (hpat, hypFVar) })
-    else
-      trace[matchgoal.debug.matcher] "FAILURE: PatternHyp.matcher {pctx} : {hpat} =!= {ldeclType}"
-      return .none
+        return (.some { pctx with hyps := pctx.hyps.insert hpat.name (hpat, hypFVar) })
 
 
 
-
-structure Depth where
-  depth : Nat := 0
-
-def Depth.increment (d: Depth) : Depth where
-  depth := d.depth + 1
-
-instance : ToString Depth where
-  toString d := String.mk (List.replicate (d.depth*2) ' ')
-
-instance : ToMessageData Depth where
-  toMessageData d := toString d
-
-
-open Lean Core Meta Elab Macro Tactic in
+open Lean Core Meta Elab Macro Tactic PrettyPrinter in
 /-- The search state of the backtracking depth first search. -/
 def depthFirstSearchHyps
   (depth : Depth)
@@ -297,42 +265,38 @@ def depthFirstSearchHyps
      let stateBeforeMatcher ← Tactic.saveState
      let mut pctx := pctx
      if let .some gpat := gpat? then
-       trace[matchgoal.debug.search] m!"{depth}STEP: matching for goal '{gpat}'"
        -- Do not do this in two steps: do the matching and the elaboration in the same step.
-       let (gpatfilled, pctx') ← (stxholes2mvars gpat).run pctx
-       let gpatfilled : TSyntax `pattern_expr := ⟨gpatfilled⟩
-       pctx := pctx' -- Lean does not have nice syntax to shadow
-       let gpatfilledterm ←  monadLift (m := TacticM) <| `([pattern_expr| $gpatfilled])
-       trace[matchgoal.debug.search] m!"{depth}STEP: filled goal pattern '{gpatfilledterm}'"
-       -- if #k then ... | needs postponing.
-       let gpatexpr ← Tactic.elabTerm -- Tactic.elabTermEnsuringType
-         (mayPostpone := true)
-         gpatfilledterm
-         (expectedType? := .none)
-         -- (expectedType? := ← inferType (← getMainTarget))
-       trace[matchgoal.debug.search] m!"{depth}STEP: isDefEq '{gpatexpr}' '{← getMainTarget}'"
-       if not (← isDefEq gpatexpr (← getMainTarget)) then
-        trace[matchgoal.debug.search] m!"{depth}  FAILED isDefEq"
-        logErrorAt gpat
-          <| MessageData.tagged `Tactic.Matchgoal <|
-            m! "unable to prove goal pattern {gpatexpr} is definitionally equal to {← getMainTarget}"
-        restoreState stateBeforeMatcher
-        return False
-     trace[matchgoal.debug.search] m!"{depth}STEP: preparing to run tactic '{tac}'."
-     trace[matchgoal.debug.search] m!"{depth}replacing into '{tac}' from context {pctx}" -- TODO: make {ctx} nested
-     let tac ← match ← replace pctx tac with
-        | .some t => pure t
-        | .none =>
+       let mainTargetStx ← delab (← getMainTarget)
+       trace[matchgoal.debug.search] m!"{depth}STEP: '{gpat}' =?= '{mainTargetStx}'"
+       match ← stxMatcher depth pctx gpat mainTargetStx with 
+       | .none =>  
+          trace[matchgoal.debug.search] m!"{depth}FAILED '{gpat} =/= '{mainTargetStx}'"
+          logErrorAt gpat
+            <| MessageData.tagged `Tactic.Matchgoal <|
+              m! "unable to match '{gpat}' =?= '{mainTargetStx}'"
           restoreState stateBeforeMatcher
           return False
+       | .some pctx' =>
+          pctx := pctx'
+          trace[matchgoal.debug.search] m!"{depth}SUCCESS '{gpat} === '{mainTargetStx}"
+        return False
+     trace[matchgoal.debug.search] m!"{depth}STEP: preparing to run tactic '{tac}'."
+     trace[matchgoal.debug.search] m!"{depth}replacing '{tac}' with context {pctx}" -- TODO: make {ctx} nested
+     let tac ← match ← replace pctx tac with
+        | .some t => 
+          trace[matchgoal.debug.search] m!"{depth}SUCCESS: replaced with {t}"
+          pure t
+        | .none =>
+          trace[matchgoal.debug.search] m!"{depth}FAILED: no replacement generated"
+          restoreState stateBeforeMatcher
+          return False
+
      trace[matchgoal.debug.search] m!"{depth}STEP: running tactic '{tac}'."
      if ← tryTactic (evalTactic tac) then
         trace[matchgoal.debug.search] m!"{depth}SUCCESS running '{tac}'."
-        dbg_trace s!"{depth}SUCCESS running '{tac}'."
         return true
      else
         trace[matchgoal.debug.search] m!"FAILURE running '{tac}'."
-        dbg_trace s!"{depth}FAILURE running {tac}'."
         restoreState stateBeforeMatcher
         return false
   | hyppat :: hyppats' =>
@@ -340,7 +304,7 @@ def depthFirstSearchHyps
      for hyp in (← getMainDecl).lctx do
        if hyp.isImplementationDetail then continue
        stateBeforeMatcher.restore -- Paranoia. This should ideally not be necessary.
-       if let .some ctx'  ← hyppat.matcher pctx hyp then
+       if let .some ctx'  ← hyppat.matcher depth.increment pctx hyp then
          if  (← depthFirstSearchHyps depth.increment tac hyppats' ctx' gpat?) then
           return true
      stateBeforeMatcher.restore -- Paranoia. This should ideally not be necessary.
