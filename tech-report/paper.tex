@@ -317,6 +317,9 @@ If we start with the ground expression \texttt{grndExpr}, and we try to delabora
 syntactic niceties like whitespace start to matter. If we try to match against \texttt{ \#x - \#x = 0},
 then we get errors where \texttt{FAILURE atom '-' /= ' - ' }.
 
+Deleting spaces around atoms seems to fix the error, but it is unclear if this
+is an honest fix?
+
 %% Acknowledgments
 \begin{acks}                            %% acks environment is optional
                                         %% contents suppressed with 'anonymous'

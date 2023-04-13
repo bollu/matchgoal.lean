@@ -120,20 +120,6 @@ instance : ToMessageData PatternCtx where
     let hyps := MessageData.ofList <| pctx.hyps.toList.map fun (k, v) => m!"{k} ↦ {(v.snd.name)}"
     m!"PatternCtx({mvars}, {hyps})"
 
-
-def isSyntaxEq (s : Syntax) (t : Syntax) : Bool :=
-  match s, t with
-  | Syntax.missing, Syntax.missing => true
-  | Syntax.atom  (val := sval) .. , Syntax.atom (val := tval) .. => sval = tval
-  | .ident (val := sval) .., .ident (val := tval) .. => sval = tval
-  | .node (kind := skind) (args := sargs) .., .node (kind := tkind) (args := targs) .. => Id.run do
-      if skind != tkind then return False
-      else
-        for (sarg, targ) in sargs.zip targs do
-          if sarg != targ then return False
-        return True
-  | _, _ => false
-
 -- Match the syntax 's' against the syntax 't', where 's' is allowed to have patterns.
 partial def stxMatcher (depth : Depth) (pctx : PatternCtx) (s : Syntax) (t : Syntax): TacticM (Option PatternCtx) := do
   trace[matchgoal.debug] "{depth}stxMatcher: '{s}' =?= '{t}'"
@@ -160,6 +146,8 @@ partial def stxMatcher (depth : Depth) (pctx : PatternCtx) (s : Syntax) (t : Syn
       trace[matchgoal.debug] "{depth}stxMatcher: SUCCESS"
       return .some pctx
     | Syntax.atom  (val := sval) ..  , Syntax.atom (val := tval) .. =>
+      let sval := sval.trim
+      let tval := tval.trim
       if sval = tval then
         trace[matchgoal.debug] "{depth}stxMatcher: SUCCESS atom '{sval}' = '{tval}'"
         return .some pctx
@@ -278,8 +266,7 @@ def depthFirstSearchHyps
           return False
        | .some pctx' =>
           pctx := pctx'
-          trace[matchgoal.debug.search] m!"{depth}SUCCESS '{gpat} === '{mainTargetStx}"
-        return False
+          trace[matchgoal.debug.search] m!"{depth}SUCCESS '{gpat} === '{mainTargetStx}'"
      trace[matchgoal.debug.search] m!"{depth}STEP: preparing to run tactic '{tac}'."
      trace[matchgoal.debug.search] m!"{depth}replacing '{tac}' with context {pctx}" -- TODO: make {ctx} nested
      let tac ← match ← replace pctx tac with

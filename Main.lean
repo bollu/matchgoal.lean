@@ -13,8 +13,6 @@ def eg1 (n : Nat) : n - n = 0 := by
 #print eg1.proof_1
 
 
-
-/-
 #check Lean.Parser.Tactic.apply
 open Lean in
 #check Expr
@@ -23,9 +21,8 @@ set_option trace.matchgoal.debug true in
 set_option trace.matchgoal.debug.search true in
 set_option trace.matchgoal.debug.matcher true in
 def eg2 (p: Prop) (prf : p) : p := by
-  matchgoal (^H : #g) ⊢ #g => exact #H
+  matchgoal (^H : #g) ⊢ #g => exact ^H
 #print eg2.proof_1
--/
 
 
 
@@ -36,8 +33,7 @@ set_option trace.matchgoal.debug.matcher true in
 def eg3 (x : Int) : (if x > 0 then true else false) := by {
   simp
   -- | TODO: need support for 'cases'
-  matchgoal ⊢ if #k then True else False => let foo := 1
-  sorry
+  matchgoal ⊢ if #k then True else False => by_cases H:#k <;> simp
 }
 
 
