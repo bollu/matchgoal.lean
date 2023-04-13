@@ -130,6 +130,42 @@ partial def stxholes2mvars (s : Syntax) : StateT PatternCtx TacticM Syntax := do
     | Syntax.node info kind args =>
          return Syntax.node info kind (← args.mapM stxholes2mvars)
 
+/-- Instantiate all unification variables in the expression and create a real Lean term.
+    Also update the state to recored new unification variables -/
+partial def matchAndElab (s : Syntax) (target : Syntax) : StateT PatternCtx TacticM (Option Syntax) := do
+  -- trace[matchgoal.debug.matcher] "s:'{toString s}'"
+  match s with
+  | `(term| $i:ident) | `(pattern_term_var| #$i:ident) =>
+    match (← get).mvars.find? i.getId with
+    | .some mvarId => (Expr.mvar mvarId).toSyntax
+    | .none =>
+        let mvarId := (← mkFreshExprMVar
+            (type? := .none) (userName := i.getId) (kind := .natural)).mvarId!
+        mvarId.assign (← Tactic.elabTerm target (mayPostpone := true) (expectedType? := .none))
+        modify (fun ctx => { ctx with mvars := ctx.mvars.insert i.getId mvarId })
+        (Expr.mvar mvarId).toSyntax -- TODO: surely there is a helper for this?
+  | _ =>
+    match s with
+    | Syntax.missing | Syntax.atom .. | Syntax.ident .. =>
+         if s == target then -- WRONG!
+           return s
+         else
+           trace[matchgoal.debug.matcher] m!"unable to match '{s}' to '{target}'"
+           return .none
+    | Syntax.node info kind args =>
+         match target with
+         | Syntax.node info' kind' args' =>
+           if kind ≠ kind' || args.size ≠ args'.size then
+             trace[matchgoal.debug.matcher] m!"unable to match '{s}' to '{target}'"
+             return .none
+           else
+             for (arg, arg') in args.zip args' do
+               xxxadsad
+               return Syntax.node info kind (← args.mapM stxholes2mvars) do
+         | _ =>
+           trace[matchgoal.debug.matcher] m!"unable to match '{s}' to '{target}'"
+           return .none
+
 open Lean Elab Macro Tactic in
 /--
 Replace holes in the Syntax given by `pattern_var` with the values in ctx
