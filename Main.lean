@@ -2,6 +2,7 @@ import «Matchgoal»
 import LSpec
 
 #check Lean.Parser.Tactic.apply
+/-
 open MatchGoal in
 set_option trace.matchgoal true in
 def eg1 (n : Nat) : n - n = 0 := by
@@ -9,15 +10,24 @@ def eg1 (n : Nat) : n - n = 0 := by
 
 #print eg1
 #print eg1.proof_1
+-/
 
+
+
+/-
+#check Lean.Parser.Tactic.apply
+open Lean in
+#check Expr
 open MatchGoal in
 set_option trace.matchgoal.debug true in
 set_option trace.matchgoal.debug.search true in
 set_option trace.matchgoal.debug.matcher true in
 def eg2 (p: Prop) (prf : p) : p := by
-  matchgoal (^H : #prf) ⊢ #prf => exact ^H
-
+  matchgoal (^H : #g) ⊢ #g => exact #H
 #print eg2.proof_1
+-/
+
+
 
 open MatchGoal in
 set_option trace.matchgoal.debug true in

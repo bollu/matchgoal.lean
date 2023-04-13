@@ -16,9 +16,16 @@ namespace MatchGoal
 
 open Lean Elab Meta Tactic Term Std RBMap
 
+/-- pattern of the hypothesis -/
 declare_syntax_cat pattern_hyp
+
+/-- pattern of 'term' variable #v -/
 declare_syntax_cat pattern_term_var
-declare_syntax_cat pattern_hyp_var
+
+/-- pattern of hypothesis variable '^H' -/
+declare_syntax_cat pattern_hyp_var -- pattern_term_ident maybe?
+
+/-- pattern of expressions -/
 declare_syntax_cat pattern_expr
 
 scoped syntax (name := term_var) "#" noWs ident : pattern_term_var
@@ -84,7 +91,7 @@ def PatternHyp.parse : TSyntax `pattern_hyp →  TacticM PatternHyp
   throwUnsupportedSyntax
 
 structure PatternCtx where
-  mvars : Std.HashMap PatternName MVarId := {}
+  mvars : Std.HashMap PatternName Syntax := {}
   /-- match hypothesis pattern names to their FVarIds in the local context --/
   hyps : Std.HashMap PatternName (PatternHyp × FVarId) := {}
 deriving Inhabited
@@ -95,40 +102,68 @@ instance : ToMessageData PatternCtx where
     let hyps := MessageData.ofList <| pctx.hyps.toList.map fun (k, v) => m!"{k} ↦ {(v.snd.name)}"
     m!"PatternCtx({mvars}, {hyps})"
 
-/-- Instantiate the variable as a Mvar. -/
-def pattermTermVar2Mvar (s : TSyntax `pattern_term_var) :
-  StateT PatternCtx TacticM (Syntax.Term) := do
-  -- trace[matchgoal.debug.matcher] m!"patternV s:'{toString s}'?"
-  match s with
-  | `(pattern_term_var| #_) | `(#_) =>
-        let mvarId := (← mkFreshExprMVar
-            (type? := .none) (userName := Name.anonymous) (kind := .syntheticOpaque)).mvarId!
-        -- NOTE: we do not insert this mvar, since this is meant to unify with anything.
-        (Expr.mvar mvarId).toSyntax -- TODO: surely there is a helper for this?
-     --return ⟨Syntax.missing⟩
-  | `(pattern_term_var| #$i:ident) | `(#$i:ident) => do
-    match (← get).mvars.find? i.getId with
-    | .some mvarId => (Expr.mvar mvarId).toSyntax
-    | .none =>
-        let mvarId := (← mkFreshExprMVar
-            (type? := .none) (userName := i.getId) (kind := .natural)).mvarId!
-        modify (fun ctx => { ctx with mvars := ctx.mvars.insert i.getId mvarId })
-        (Expr.mvar mvarId).toSyntax -- TODO: surely there is a helper for this?
-  | _ => throwUnsupportedSyntax
 
+def isSyntaxEq (s : Syntax) (t : Syntax) : Bool :=
+  match s, t with
+  | Syntax.missing, Syntax.missing => true
+  | Syntax.atom  (val := sval) .. , Syntax.atom (val := tval) .. => sval = tval
+  | .ident (val := sval) .., .ident (val := tval) .. => sval = tval
+  | .node (kind := skind) (args := sargs) .., .node (kind := tkind) (args := targs) .. => Id.run do
+      if skind != tkind then return False
+      else
+        for (sarg, targ) in sargs.zip targs do
+          if sarg != targ then return False
+        return True
+  | _, _ => false
 
-open Lean Core Meta Elab Macro Tactic in
-/-- Instantiate all unification variables in the expression and create a real Lean term.
-    Also update the state to recored new unification variables -/
-partial def stxholes2mvars (s : Syntax) : StateT PatternCtx TacticM Syntax := do
-  -- trace[matchgoal.debug.matcher] "s:'{toString s}'"
-  match s with
-  | `(term| $var:pattern_term_var) => pattermTermVar2Mvar var
+-- Match the syntax 's' against the syntax 't', where 's' is allowed to have patterns.
+partial def matcher (pctx : PatternCtx) (s : Syntax) (t : Syntax): TacticM (Option PatternCtx) := do
+  trace[matchgoal.debug] "replace s:'{toString s}'"
+  match s with -- [Char] --Parser--> Syntax
+  | `(pattern_term_var| #$i:ident) | `(term| #$i:ident) => do
+     trace[matchgoal.debug] "replace in ident '{i}'"
+      match pctx.mvars.find? i.getId with
+      | .none => return .some { pctx with mvars := pctx.mvars.insert i.getId t }
+      | .some mvarStx =>
+        match (← matcher pctx mvarStx t) with
+        | .none => return .none
+        | .some pctx' => return .some pctx'
   | _ =>
-    match s with
-    | Syntax.missing | Syntax.atom .. | Syntax.ident .. => return s
-    | Syntax.node info kind args =>
-         return Syntax.node info kind (← args.mapM stxholes2mvars)
+    match s, t with
+    | Syntax.missing, Syntax.missing => return .some pctx
+    | Syntax.atom  (val := sval) ..  , Syntax.atom (val := tval) .. =>
+      return if sval = tval then .some pctx else .none
+    | Syntax.ident (val := sval) .., .ident (val := tval) .. =>
+      return if sval = tval then .some pctx else .none
+    | .node (kind := skind) (args := sargs) .., .node (kind := tkind) (args := targs) .. => do
+        if skind != tkind then return .none
+        else
+          let mut pctx := pctx
+          for (sarg, targ) in sargs.zip targs do
+            match ← matcher pctx sarg targ with
+            | .none => return .none
+            | .some pctx' => pctx := pctx'
+          return .some pctx
+    | _, _ => return .none
+
+
+  -- | `(pattern_hyp_var| ^$i:ident) | `(term| ^$i:ident) => do
+  --     match pctx.hyps.find? i.getId with
+  --     | .none => do
+  --        trace[matchgoal.debug.matcher] m!"Matchgoal hypothesis variable {i} has not been unified when replacing syntax '{s}'. This is an error."
+  --        return .none
+  --     | .some (hypPat, _) => do return hypPat.nameStx
+  -- | _ =>
+  --   match s with
+  --   | Syntax.node info kind args => do
+  --       let mut args' := #[]
+  --       for a in args do
+  --          match ← replace pctx a with
+  --          | .some a' => args' := args'.push a'
+  --          | .none => return .none
+  --       return Syntax.node info kind args'
+  --   | Syntax.missing | Syntax.atom .. | Syntax.ident .. => return s
+
 
 /-- Instantiate all unification variables in the expression and create a real Lean term.
     Also update the state to recored new unification variables -/
@@ -215,9 +250,9 @@ def PatternHyp.matcher (pctx: PatternCtx)
     -- | TODO: refactor code duplication
     let (hpatfilled, pctx) ← (stxholes2mvars hpat.rhs.raw).run pctx
     let hpatfilled : TSyntax `pattern_expr := ⟨hpatfilled⟩
-    let hpatfilledterm ←  monadLift (m := TacticM) <| `([pattern_expr| $hpatfilled])
-    let hpatexpr ← Tactic.elabTerm hpatfilledterm (expectedType? := .none)
-    if ← isDefEq hpatexpr ldeclType
+    let hpatfilledterm : TSyntax `term ←  monadLift (m := TacticM) <| `([pattern_expr| $hpatfilled])
+    let hpatexpr ← Tactic.elabTerm hpatfilledterm (expectedType? := .none) (mayPostpone := .true)
+    if ← isDefEq hpatexpr ldeclType -- Makes me sad because TC resolution is sad.
     then do
         -- TODO: ask Henrik if this is the optimal way.
         -- Convert the given goal `Ctx |- target` into `Ctx |- type -> target`.
@@ -232,13 +267,6 @@ def PatternHyp.matcher (pctx: PatternCtx)
       return .none
 
 
-/-- match goal tactic -/
--- TODO: why does 'local syntax' not work?
--- local syntax (name := matchgoal)
-scoped syntax (name := matchgoal)
-  "matchgoal" ws
-  (hyps ws)?
-  "⊢" ws (( pattern_expr ws)?) "=>" ws tactic : tactic
 
 
 structure Depth where
@@ -311,21 +339,30 @@ def depthFirstSearchHyps
      let stateBeforeMatcher ← Tactic.saveState
      for hyp in (← getMainDecl).lctx do
        if hyp.isImplementationDetail then continue
-       stateBeforeMatcher.restore -- bring back state before matchering.
+       stateBeforeMatcher.restore -- Paranoia. This should ideally not be necessary.
        if let .some ctx'  ← hyppat.matcher pctx hyp then
          if  (← depthFirstSearchHyps depth.increment tac hyppats' ctx' gpat?) then
           return true
-     stateBeforeMatcher.restore
+     stateBeforeMatcher.restore -- Paranoia. This should ideally not be necessary.
      return False
 
+/-- match goal tactic -/
+-- local syntax (name := matchgoal)
+scoped syntax (name := matchgoal)
+  "matchgoal" ws
+  (hyps ws)?
+  "⊢" ws (( pattern_expr ws)?) "=>" ws tactic : tactic
+
+-- foobar [[ ident ]] : tactic
 open Lean Core Meta Elab Macro Tactic in
 @[tactic MatchGoal.matchgoal]
 def evalMatchgoal : Tactic := fun stx => -- (stx -> TacticM Unit)
+  -- if stx.kind == node and stx[0] == "matchgoal and stx[1] == ....
   match stx with
   | `(tactic| matchgoal
       $[ $[ $hpatstxs? ];* ]?
-      ⊢ $[ $gpat?:pattern_expr ]? => $tac ) => do
-    -- trace[matchgoal.debug] m!"{toString gpat?}"
+      ⊢ $[ $gpat?:pattern_expr ]? => $tac:tactic ) => do
+    trace[matchgoal.debug] m!"{toString gpat?}"
     let mut pctx : PatternCtx := default
     let hpats : List PatternHyp ← match hpatstxs? with
          | .none => pure []
