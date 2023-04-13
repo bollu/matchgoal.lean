@@ -13,15 +13,15 @@ def eg1 (n : Nat) : n - n = 0 := by
 open MatchGoal in
 set_option trace.matchgoal.debug true in
 set_option trace.matchgoal.debug.search true in
-set_option trace.matchgoal.debug.unify true in
+set_option trace.matchgoal.debug.matcher true in
 example (p: Prop) (prf : p) : p := by
-  matchgoal (#H : #prf) ⊢ #prf => exact #H
+  matchgoal (^H : #prf) ⊢ #prf => exact ^H
 
 open MatchGoal in
 example (x : Int) : (if x > 0 then true else false = true) := by {
   simp
   -- | TODO: need support for 'cases'
-  -- matchgoal ⊢ if #x then #y else #z => cases #T:#x <;> simp[#T] -- TODO: we want ?T to be gensymd here.
+  -- matchgoal ⊢ if #x then #foo else #bar => cases T:#x <;> simp[T] -- TODO: we want ?T to be gensymd here.
   sorry
 }
 

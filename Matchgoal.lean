@@ -16,258 +16,166 @@ namespace MatchGoal
 
 open Lean Elab Meta Tactic Term Std RBMap
 
--- TODO: Make naming consistent, choose between `Pattern` and `Unification`.
+declare_syntax_cat pattern_hyp
+declare_syntax_cat pattern_term_var
+declare_syntax_cat pattern_hyp_var
+declare_syntax_cat pattern_expr
 
-declare_syntax_cat goal_matcher
-declare_syntax_cat hyp_matcher
-declare_syntax_cat unification_var
-declare_syntax_cat unification_expr
-
-scoped syntax (name := var) "#" noWs ident : unification_var
+scoped syntax (name := term_var) "#" noWs ident : pattern_term_var
+scoped syntax (name := hyp_var) "^" noWs ident : pattern_hyp_var
 
 
 /- Names that are created from `#<name>` syntax. -/
 @[reducible]
-def UnificationName := Name
+def PatternName := Name
 
--- macro_rules
--- | `(identifier| # $i:unification_var) => sorry
-
--- scoped syntax unification_var : term -- allow unification variables to be used in terms.
-
--- every unification variable is a term.
 open Lean Elab in
-scoped elab (name := var2term) t:unification_var : term => do
+
+/-- every unification variable is a term. -/
+scoped elab (name := termvar2term) t:pattern_term_var : term => do
   let s : Syntax ←
     match t with
-    | `(unification_var| #$i:ident) => pure i
+    | `(pattern_term_var| #$i:ident) => pure i
     | _ => throwUnsupportedSyntax
   elabTerm s (expectedType? := .none)
 
--- 1. var -var2term-> term -term2expr-> expr
+
+/-- every hypothesis variable is an ident. -/
+scoped elab (name := hypvar2ident) t:pattern_hyp_var : term => do
+  let s : Syntax ←
+    match t with
+    | `(pattern_hyp_var| ^$i:ident) => pure i
+    | _ => throwUnsupportedSyntax
+  elabTerm s (expectedType? := .none)
+
+
+/--  var -var2term-> term -term2expr-> expr -/
 scoped syntax (name := term2expr) (priority := 0)
-  term : unification_expr
+  term : pattern_expr
+
 scoped syntax (name := hyp)
-  "(" unification_var ws ":" ws unification_expr ")" : hyp_matcher
+  "(" pattern_hyp_var ws ":" ws pattern_expr ")" : pattern_hyp
 
 scoped syntax (name := elabUnificationExpr)
-  "[unification_expr|" unification_expr "]" : term
+  "[pattern_expr|" pattern_expr "]" : term
 macro_rules
-| `([unification_expr| $e:term]) => return e
+| `([pattern_expr| $e:term]) => return e
 
-syntax hyps := sepBy(hyp_matcher, "; ")
-
-structure MVar where
-  id: MVarId
+syntax hyps := sepBy(pattern_hyp, "; ")
 
 
-instance : ToMessageData MVar where
-  toMessageData mvar := toMessageData mvar.id
+structure PatternHyp where
+  /-- for position information. TODO: pull position out of the raw Tsyntax? -/
+  nameStx : Syntax.Ident
+  rhs : TSyntax `pattern_expr
 
-#check MetaM
-open Lean Elab Meta Tactic in
-def MVar.getName (mvar : MVar) : TacticM Name := do
-  mvar.id.getTag
+-- @[computed_field] TODO: figure out how to use computed fields.
+def PatternHyp.name (p : PatternHyp) : Name  := p.nameStx.getId
 
-def MVar.assign (mvar : MVar) (e : Expr) : TacticM Unit :=
-  mvar.id.assign e
-def MVar.toExpr (mvar : MVar) : Expr := Expr.mvar mvar.id
-def MVar.ofExpr: Expr → TacticM MVar
-| .mvar id => return .mk id
-| e => throwError "Internal tactic error: expected mvar, found expression {e}"
-
- -- TODO: try not to create more MVars?
-open Lean Elab in
-def MVar.toSyntax (mvar : MVar) : TermElabM Syntax := exprToSyntax mvar.toExpr
-
-instance : Coe MVar Expr where
-  coe := MVar.toExpr
+instance : ToMessageData PatternHyp where
+  toMessageData h := m!"{h.nameStx} : {h.rhs}"
+def PatternHyp.parse : TSyntax `pattern_hyp →  TacticM PatternHyp
+| `(pattern_hyp| (^$i: ident : $e:pattern_expr)) =>
+   return { nameStx := i, rhs := e }
+| stx => do
+  logErrorAt stx <| MessageData.tagged `Tactic.Matchgoal <| m! "unknown hypothesis pattern '{stx}'"
+  throwUnsupportedSyntax
 
 structure PatternCtx where
-  mvars : Std.HashMap Name MVar := {}
-  hyps : Std.HashMap Name FVarId := {} -- match hypothesis pattern names to real hypothesis names.
+  mvars : Std.HashMap PatternName MVarId := {}
+  /-- match hypothesis pattern names to their FVarIds in the local context --/
+  hyps : Std.HashMap PatternName (PatternHyp × FVarId) := {}
 deriving Inhabited
 
 instance : ToMessageData PatternCtx where
   toMessageData pctx := Id.run do
     let mvars := MessageData.ofList <| pctx.mvars.toList.map (fun (k, v) =>  m!"{k} ↦ {v}")
-    let hyps := MessageData.ofList <| pctx.hyps.toList.map fun (k, v) => m!"{k} ↦ {v.name}"
-    m!"PatternCtx(tacticState?, {mvars}, {hyps})"
+    let hyps := MessageData.ofList <| pctx.hyps.toList.map fun (k, v) => m!"{k} ↦ {(v.snd.name)}"
+    m!"PatternCtx({mvars}, {hyps})"
 
-
--- TODO: think about order of monads?
--- is it (LogicT TacticM) or (TacticT LogicM) ?
-def MatchGoalM α := TacticM (List α)
-
-def MatchGoalM.unwrap : MatchGoalM α → TacticM (List α) := id
-def MatchGoalM.wrap : TacticM (List α) → MatchGoalM α := id
-
-instance : Functor MatchGoalM where
-  map f mas := MatchGoalM.wrap do return (← mas).map f
-
-instance : Monad MatchGoalM where
-  pure a := MatchGoalM.wrap (pure [a])
-  bind mas a2mbs := MatchGoalM.wrap do
-    let mut xs := []
-    for a in (← mas.unwrap) do
-      xs := xs.append (← a2mbs a)
-    return xs
-
-instance : MonadBacktrack Tactic.SavedState MatchGoalM where
-  saveState := MatchGoalM.wrap <| do let s ← saveState; return [s]
-  restoreState state := MatchGoalM.wrap <| do restoreState state; return [()]
-
-instance : MonadLift TacticM MatchGoalM where
-  monadLift ma := MatchGoalM.wrap do return [← ma]
-
-instance : MonadRef MatchGoalM where
-  getRef :=
-    let I : MonadRef TacticM := inferInstance
-    monadLift <| I.getRef
-  withRef stx mxs := MatchGoalM.wrap do
-    let I : MonadRef TacticM := inferInstance
-    let xs ← mxs
-    let xs ← xs.mapM (fun x => I.withRef stx (pure x))
-    return xs
-
-def foo : Int → Int → Int
-| x, 0 | 0, x => 2 * x
-| _ , _ => 42
-
-instance : Alternative MatchGoalM where
-  failure := MatchGoalM.wrap (return [])
-  orElse  mas unit2mas := MatchGoalM.wrap do return (← mas) ++ (← unit2mas ())
-
-
-
-def unificationVarFillHoles (s : TSyntax `unification_var) : StateT PatternCtx TacticM Syntax := do
-  trace[matchgoal.debug.unify] m!"unifyV s:'{toString s}'?"
+/-- Instantiate the variable as a Mvar. -/
+def pattermTermVar2Mvar (s : TSyntax `pattern_term_var) :
+  StateT PatternCtx TacticM (Syntax.Term) := do
+  trace[matchgoal.debug.matcher] m!"patternV s:'{toString s}'?"
   match s with
-  | `(unification_var| #$i:ident) | `(#$i:ident) => do -- TODO: should I match on 'unification_var' as well?
-    trace[matchgoal.debug.unify] m!"unifyV s:'{toString s}'!"
-    -- TODO: we might need to 'gensym' custom names here.
-    if let .some fvar := (← get).hyps.find? i.getId
-    then let I : Quote Name := inferInstance; return (I.quote fvar.name).raw
-
+  | `(pattern_term_var| #$i:ident) | `(#$i:ident) => do
     match (← get).mvars.find? i.getId with
-    | .some mvar => mvar.toSyntax
+    | .some mvarId => (Expr.mvar mvarId).toSyntax
     | .none =>
-        let mvar : MVar := ← MVar.ofExpr (← mkFreshExprMVar
-            (type? := .none) (userName := i.getId) (kind := .natural))
-        modify (fun ctx => { ctx with mvars := ctx.mvars.insert i.getId mvar })
-        mvar.toSyntax
+        let mvarId := (← mkFreshExprMVar
+            (type? := .none) (userName := i.getId) (kind := .natural)).mvarId!
+        modify (fun ctx => { ctx with mvars := ctx.mvars.insert i.getId mvarId })
+        (Expr.mvar mvarId).toSyntax -- TODO: surely there is a helper for this?
   | _ => throwUnsupportedSyntax
 
 
--- instantiate all unification variables in the expression and create a real Lean term.
--- Also update the state to recored new unification variables
--- TODO: how do I look inside a term and find unification variables?
 open Lean Core Meta Elab Macro Tactic in
-partial def unificationExprFillHoles (s : Syntax) : StateT PatternCtx TacticM Syntax := do
-  trace[matchgoal.debug.unify] "s:'{toString s}'"
+/-- Instantiate all unification variables in the expression and create a real Lean term.
+    Also update the state to recored new unification variables -/
+partial def stxholes2mvars (s : Syntax) : StateT PatternCtx TacticM Syntax := do
+  trace[matchgoal.debug.matcher] "s:'{toString s}'"
   match s with
-  | `(term| $var:unification_var) => unificationVarFillHoles var
+  | `(term| $var:pattern_term_var) => pattermTermVar2Mvar var
   | _ =>
     match s with
     | Syntax.missing | Syntax.atom .. | Syntax.ident .. => return s
     | Syntax.node info kind args =>
-         return Syntax.node info kind (← args.mapM unificationExprFillHoles)
+         return Syntax.node info kind (← args.mapM stxholes2mvars)
 
--- This needs to be refactored. We first fill the holes to get syntax with metavars
--- that everyone agrees on. Then we unify and backtrack.
--- open Lean Core Meta Elab Macro Tactic in
--- def runHypMatcher (ctx: PatternCtx) : TSyntax `hyp_matcher → MatchGoalM PatternCtx
--- | `(hyp_matcher| (#$i:ident : $e:unification_expr)) => do
---     ctx.restoreState
---     (← getMainDecl).lctx.decls.foldl (init := pure ctx) (fun mctx ldecl? => do
---       ctx.restoreState
---       match ldecl? with
---       | .none => return ctx
---       | .some ldecl => Alternative.orElse mctx (fun () => do
---         let ldeclType : Expr ← inferType ldecl.toExpr
---         let newctx ← unificationExprFillHoles ctx ldeclType e
---         newctx.saveState -- TODO: this should be un-necessary
---       ))
--- | _ => MatchGoalM.wrap <| throwUnsupportedSyntax
-
-
--- Substitute holes in the Syntax given by `unification_var` with the values in ctx
--- TODO: We need to know if we should substitute `MVars` or
--- `Name`s. In the hypothesis manipulation, we should substitute MVarIds.
--- For the final proof production, we should substitute `Names` ?
 open Lean Elab Macro Tactic in
-partial def substitute (ctx : PatternCtx) (s : Syntax) : TacticM Syntax := do
-  trace[matchgoal.debug] "substitute s:'{toString s}'"
+/--
+Replace holes in the Syntax given by `pattern_var` with the values in ctx
+TODO: We need to know if we should replace `MVars` or
+`Name`s. In the hypothesis manipulation, we should replace MVarIds.
+For the final proof production, we should replace `Names` ? -/
+-- TODO: replace with 'replacer'?
+partial def replace (pctx : PatternCtx) (s : Syntax) : TacticM (Option Syntax) := do
+  trace[matchgoal.debug] "replace s:'{toString s}'"
   match s with
-  | `(unification_var| #$i:ident) | `(term| #$i:ident) => do
-      -- Here we use the nasty trick of converting an `MVar` into a `Syntax` object.
-      match (ctx.mvars.find? i.getId, ctx.hyps.find? i.getId) with
-      | (.none, .none) => do
+  | `(pattern_term_var| #$i:ident) | `(term| #$i:ident) => do
+     trace[matchgoal.debug] "replace in ident '{i}'"
+      match pctx.mvars.find? i.getId with
+      | .none => do
+         trace[matchgoal.debug.matcher] m!"Matchgoal variable {i} has not been unified when replacing syntax '{s}'. This is an error."
          logErrorAt s <|
            MessageData.tagged `Tactic.Matchgoal <|
-           m!"Matchgoal variable {s} has not been unified. This is an error."
-         return s
-      | (.some mvar, .none) =>
-         -- TODO: check that mvar has value?
-         mvar.toSyntax
-      | (.none, .some hyp) => do
-           -- TODO: use `TSyntax` and not `Syntax`.
-           let userName ← hyp.getUserName
-           let I : Lean.Quote Name := inferInstance
-           return (I.quote userName).raw -- Dose this actually work?
-      | (.some _, .some v) => do
-          logErrorAt s <|
-             MessageData.tagged `Tactic.Matchgoal <|
-             m!"Variable {s} is incorrectly used as a term variable and as a hypothesis variable '{v.name}'. This is an error."
-          return s
+           m!"Matchgoal variable {i} has not been unified when replacing syntax '{s}'. This is an error."
+         return .none
+      | .some mvar => return ← (Expr.mvar mvar).toSyntax
+  | `(pattern_hyp_var| ^$i:ident) | `(term| ^$i:ident) => do
+      match pctx.hyps.find? i.getId with
+      | .none => do
+         trace[matchgoal.debug.matcher] m!"Matchgoal hypothesis variable {i} has not been unified when replacing syntax '{s}'. This is an error."
+         return .none
+      | .some (hypPat, _) => do return hypPat.nameStx
   | _ =>
     match s with
-    | Syntax.node info kind args => do return Syntax.node info kind (← args.mapM (substitute ctx))
+    | Syntax.node info kind args => do
+        let mut args' := #[]
+        for a in args do
+           match ← replace pctx a with
+           | .some a' => args' := args'.push a'
+           | .none => return .none
+        return Syntax.node info kind args'
     | Syntax.missing | Syntax.atom .. | Syntax.ident .. => return s
 
 
-structure HypPattern where
-  name : Name
-  nameStx : TSyntax `ident -- for position information. -- TODO: create an abstraction.
-  rhs : TSyntax `unification_expr
-
-instance : ToMessageData HypPattern where
-  toMessageData h := m!"{h.name} : {h.rhs}"
-
-
-
-def HypPattern.parse : TSyntax `hyp_matcher →  TacticM HypPattern
-| `(hyp_matcher| (#$i: ident : $e:unification_expr)) =>
-   return { name := i.getId, nameStx := i, rhs := e }
-| stx => do
-  logErrorAt stx <| MessageData.tagged `Tactic.Matchgoal <| m! "unknown hypothesis pattern '{stx}'"
-  throwUnsupportedSyntax
-
-
-def MatchGoalM.branch (xs : List (MatchGoalM α)) : MatchGoalM α :=
-  MatchGoalM.wrap do
-    let mut vs := []
-    for x in xs do
-      vs := vs ++ (← MatchGoalM.unwrap x)
-    return vs
-
-#check intro1P
-#check MetaM
 
 open Lean Core Elab Meta Macro Tactic in
-def HypPattern.unify (pctx: PatternCtx) (hpat : HypPattern) (ldecl: LocalDecl) : TacticM (Option PatternCtx) := do
+def PatternHyp.matcher (pctx: PatternCtx)
+  (hpat : PatternHyp)
+  (ldecl: LocalDecl) : TacticM (Option PatternCtx) := do
     let ldeclType : Expr ← inferType ldecl.toExpr
-    trace[matchgoal.debug.unify] "HypPattern.unify {pctx} : {hpat} =?= {ldeclType}"
+    trace[matchgoal.debug.matcher] "PatternHyp.matcher {pctx} : {hpat} =?= {ldeclType}"
     -- | TODO: refactor code duplication
-    let (hpatfilled, newctx) ← (unificationExprFillHoles hpat.rhs.raw).run pctx
-    let hpatfilled : TSyntax `unification_expr := ⟨hpatfilled⟩
-    let hpatfilledterm ←  monadLift (m := TacticM) <| `([unification_expr| $hpatfilled])
+    let (hpatfilled, pctx) ← (stxholes2mvars hpat.rhs.raw).run pctx
+    let hpatfilled : TSyntax `pattern_expr := ⟨hpatfilled⟩
+    let hpatfilledterm ←  monadLift (m := TacticM) <| `([pattern_expr| $hpatfilled])
     let hpatexpr ← Tactic.elabTerm hpatfilledterm (expectedType? := .none)
     if ← isDefEq hpatexpr ldeclType
     then do
-        trace[matchgoal.debug.unify] "SUCCESS: HypPattern.unify {pctx} : {hpat} === {ldeclType}"
-        let hypMVar : Expr ← mkFreshExprMVar (type? := .none) (userName := hpat.name)
-        let hypMVar : MVar ← MVar.ofExpr hypMVar
+        trace[matchgoal.debug.matcher] "SUCCESS: PatternHyp.matcher {pctx} : {hpat} === {ldeclType}"
+        let hypMVar : MVarId := (← mkFreshExprMVar (type? := .none) (userName := hpat.name)).mvarId!
         hypMVar.assign hpatexpr
         -- TODO: ask Henrik if this is the optimal way.
         -- Convert the given goal `Ctx |- target` into `Ctx |- type -> target`.
@@ -275,9 +183,9 @@ def HypPattern.unify (pctx: PatternCtx) (hpat : HypPattern) (ldecl: LocalDecl) :
         -- `intros` the arrow.
         let (hypFVar, newgoal) ← newgoal.intro1P
         replaceMainGoal [newgoal]
-        pure (.some { pctx with hyps := pctx.hyps.insert hpat.name hypFVar })
+        pure (.some { pctx with hyps := pctx.hyps.insert hpat.name (hpat, hypFVar) })
     else
-      trace[matchgoal.debug.unify] "FAILURE: HypPattern.unify {pctx} : {hpat} =!= {ldeclType}"
+      trace[matchgoal.debug.matcher] "FAILURE: PatternHyp.matcher {pctx} : {hpat} =!= {ldeclType}"
       return .none
 
 
@@ -287,36 +195,57 @@ def HypPattern.unify (pctx: PatternCtx) (hpat : HypPattern) (ldecl: LocalDecl) :
 scoped syntax (name := matchgoal)
   "matchgoal" ws
   (hyps ws)?
-  "⊢" ws (( unification_expr)? <|>  "_") ws "=>" ws tactic : tactic
+  "⊢" ws (( pattern_expr ws)?) "=>" ws tactic : tactic
 
 
 open Lean Core Meta Elab Macro Tactic in
 /-- The search state of the backtracking depth first search. -/
 def depthFirstSearchHyps
   (tac : TSyntax `tactic)
-  (hyppats : List HypPattern)
-  (ctx : PatternCtx) : TacticM Bool :=  do
+  (hyppats : List PatternHyp)
+  (pctx : PatternCtx)
+  (gpat? : Option (TSyntax `pattern_expr)): TacticM Bool :=  do
+  trace[matchgoal.debug.search] m!"STEP: depthFirstSearchHyps {hyppats}"
   match hyppats with
   | [] => do
-      trace[matchgoal.debug.search] m!"substituting into '{tac}' from context {ctx}" -- TODO: make {ctx} nested
-      let tac ← substitute ctx tac
-      trace[matchgoal.debug.search] m!"running tactic '{tac}'."
-      match ← tryTactic? (evalTactic tac) with
-      | .some () =>
-         trace[matchgoal.debug.search] m!"SUCCESS running '{tac}'."
-         return true
-      | _ =>
+     let mut pctx := pctx
+     if let .some gpat := gpat? then
+       let (gpatfilled, pctx') ← (stxholes2mvars gpat).run pctx
+       let gpatfilled : TSyntax `pattern_expr := ⟨gpatfilled⟩
+       pctx := pctx' -- Lean does not have nice syntax to shadow
+       let gpatfilledterm ←  monadLift (m := TacticM) <| `([pattern_expr| $gpatfilled])
+       let gpatexpr ← Tactic.elabTerm gpatfilledterm (expectedType? := .none)
+       if not (← isDefEq gpatexpr (← getMainTarget)) then
+        logErrorAt gpat
+          <| MessageData.tagged `Tactic.Matchgoal <| m! "unable to matcher goal pattern {gpatexpr} with goal {← getMainTarget}"
+    -- We have now matched goal, let's matcher hyps.
+      trace[matchgoal.debug.search] m!"STEP: preparing to run tactic '{tac}'."
+      trace[matchgoal.debug.search] m!"replacing into '{tac}' from context {pctx}" -- TODO: make {ctx} nested
+      let tac ← match ← replace pctx tac with
+        | .some t => trace[matchgoal.debug.search] m!"XXXjdalksdjas"; pure t
+        | .none => trace[matchgoal.debug] m!"SAJDKSADJKSADSA";  return False
+      trace[matchgoal.debug] m!"========================="
+      trace[matchgoal.debug.search] m!"STEP: running tactic '{tac}'."
+      if ← tryTactic (evalTactic tac) then
+        trace[matchgoal.debug.search] m!"SUCCESS running '{tac}'."
+        dbg_trace s!"SUCCESS running '{tac}'."
+        IO.eprintln "XXXXXXXXXXX"
+        return true
+      else
         trace[matchgoal.debug.search] m!"FAILURE running '{tac}'."
+        dbg_trace s!"FAILURE running {tac}'."
+        IO.eprintln "YYYYYYYYY"
         return false
   | hyppat :: hyppats' =>
-     let stateBeforeUnif ← Tactic.saveState
+     let stateBeforeMatcher ← Tactic.saveState
      for hyp in (← getMainDecl).lctx do
        if hyp.isImplementationDetail then continue
-       stateBeforeUnif.restore -- bring back state before unifying.
-       if let .some ctx'  ← hyppat.unify ctx hyp then
-         if  (← depthFirstSearchHyps tac hyppats' ctx')
-         then return true
-     stateBeforeUnif.restore
+       stateBeforeMatcher.restore -- bring back state before matchering.
+       if let .some ctx'  ← hyppat.matcher pctx hyp then
+         if  (← depthFirstSearchHyps tac hyppats' ctx' gpat?) then
+          IO.eprintln "XXXXXXXXXXX"
+          return true
+     stateBeforeMatcher.restore
      return False
 
 open Lean Core Meta Elab Macro Tactic in
@@ -324,29 +253,14 @@ open Lean Core Meta Elab Macro Tactic in
 def evalMatchgoal : Tactic := fun stx => -- (stx -> TacticM Unit)
   match stx with
   | `(tactic| matchgoal
-        $[ $[ $hs? ];* ]?
-        ⊢ _ => $t ) => do
-        return ()
-
-  | `(tactic| matchgoal
       $[ $[ $hpatstxs? ];* ]?
-      ⊢ $[ $gpat?:unification_expr ]? => $tac ) => do
+      ⊢ $[ $gpat?:pattern_expr ]? => $tac ) => do
     trace[matchgoal.debug] m!"{toString gpat?}"
-    let mut ctx : PatternCtx := default
-    if let .some gpat := gpat? then
-      let (gpatfilled, ctx') ← (unificationExprFillHoles gpat).run default
-      let gpatfilled : TSyntax `unification_expr := ⟨gpatfilled⟩
-      ctx := ctx' -- Lean does not have nice syntax to shadow
-      let gpatfilledterm ←  monadLift (m := TacticM) <| `([unification_expr| $gpatfilled])
-      let gpatexpr ← Tactic.elabTerm gpatfilledterm (expectedType? := .none)
-      if not (← isDefEq gpatexpr (← getMainTarget)) then
-       logErrorAt gpat
-         <| MessageData.tagged `Tactic.Matchgoal <| m! "unable to unify goal pattern {gpatexpr} with goal {← getMainTarget}"
-    -- We have now unified goal, let's unify hyps.
-    let hpats : List HypPattern ← match hpatstxs? with
+    let mut pctx : PatternCtx := default
+    let hpats : List PatternHyp ← match hpatstxs? with
          | .none => pure []
-         | .some stxs => stxs.toList.mapM HypPattern.parse
-    let success ← depthFirstSearchHyps tac hpats ctx
+         | .some stxs => stxs.toList.mapM PatternHyp.parse
+    let success ← depthFirstSearchHyps tac hpats pctx gpat?
     match success with
     | true => return ()
     | false => throwError m!"matchgoal backtracking search exhaustively failed. Giving up up on '{stx}'."
